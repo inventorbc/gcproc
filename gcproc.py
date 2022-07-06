@@ -17,12 +17,8 @@ import re
 import os
 
 # Align peaks and return peak area table
-def get_area(input_file):
-    command = '/usr/local/bin/Rscript'
-    script = '/home/bkchi/Documents/gcproc/gcproc.R'
-    args = input_file
-    
-    output = subprocess.check_output([command, script, args], universal_newlines=True)
+def get_area(input_file, script):
+    output = subprocess.check_output(['RScript', script, input_file], universal_newlines=True)
     
     # Locate the start and end of the dataframe with analyte peak areas
     pattern = 'START(?:\s|.)*END' #?: non capaturing group so that re does not return matched capture group.
@@ -38,6 +34,27 @@ def get_area(input_file):
         area_table.append(line)
     
     return area_table
+
+def fix_area_orders(area_table, is_index):
+    rows = len(area_table)
+    cols = len(area_table[0])
+    
+    fixed_area_table = []
+    
+    for row in range(0, rows):
+        entry = []
+        is_value = 0
+        for col in range(0, cols):
+            if (col == is_index):
+                is_value = area_table[row][col]
+            else:
+                entry.append(area_table[row][col])
+        entry.append(is_value)
+        fixed_area_table.append(entry)
+    
+    return fixed_area_table
+    
+                
 
 # Read in agilent REPORT.txt file and return array with the sample name as the first element,
 # the detector as second element, and an array of format ['peak', 'area'] as the second element. Encoding is utf-16
@@ -125,24 +142,60 @@ def sort_index(report, index):
     alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key[index]) ]
     return sorted(report, key = alphanum_key)
 
-# Returns array of form ['analyte name', 'front_cf', 'back_cf']
-def get_corr_factors(cf_file):
+# Find the index of internal standard in the correction factors file (starts from 1)
+def get_is_index(cf_file):
     workbook = xlrd.open_workbook(cf_file)
     worksheet = workbook.sheet_by_index(0)
 
     rows = worksheet.nrows
+    index = 0
+
+    for row in range(2, rows): # Account for empty cells and headers before rows begin
+        if (re.match(".*_IS", worksheet.cell_value(row, 0))):
+            index = row - 1
+            
+    return index
+
+# Read the cf file and return table with internal standard row at end
+def read_cf_file(cf_file):
+    workbook = xlrd.open_workbook(cf_file)
+    worksheet = workbook.sheet_by_index(0)
+
+    rows = worksheet.nrows
+    cols = worksheet.ncols
+    
+    cf_table = []
+    is_line = []
+
+    for row in range(2, rows): # Account for empty cells and headers before rows begin
+        line = []
+        for col in range(0, cols):
+            line.append(worksheet.cell_value(row, col))
+        
+        if (re.match(".*_IS", worksheet.cell_value(row, 0))):
+            is_line = line
+            continue # Skip internal standard when building data table
+        cf_table.append(line)
+        
+    cf_table.append(is_line)
+    
+    return cf_table
+    
+# Returns array of form ['analyte name', 'front_cf', 'back_cf', 'colors']
+def get_corr_factors(cf_table):
+    rows = len(cf_table)
     
     correction_factors = []
 
-    for row in range(2, rows): # Account for empty cells and headers before rows begin
-        correction_factors.append([worksheet.cell_value(row, 0), worksheet.cell_value(row, 3), 
-            worksheet.cell_value(row, 4), worksheet.cell_value(row, 6)])
+    for row in range(0, rows):
+        correction_factors.append([cf_table[row][0], cf_table[row][3], 
+            cf_table[row][4], cf_table[row][6]])
     
     return correction_factors
 
 # Returns array of form ['analyte name', 'front_ret', 'back_ret']
-def get_ret_times(cf_file):
-    workbook = xlrd.open_workbook(cf_file)
+def get_ret_times(cf_dir):
+    workbook = xlrd.open_workbook(cf_dir)
     worksheet = workbook.sheet_by_index(0)
 
     rows = worksheet.nrows
@@ -150,51 +203,41 @@ def get_ret_times(cf_file):
     ret_times = []
 
     for row in range(2, rows): # Account for empty cells and headers before rows begin
-        ret_times.append([worksheet.cell_value(row, 0), worksheet.cell_value(row, 1), 
-            worksheet.cell_value(row, 2)])
+        ret_times.append([worksheet.cell_value(row, 0), worksheet.cell_value(row, 1), worksheet.cell_value(row, 2)])
     
     return ret_times
 
 # Return name list
-def get_names(cf_file):
-    workbook = xlrd.open_workbook(cf_file)
-    worksheet = workbook.sheet_by_index(0)
-
-    rows = worksheet.nrows
+def get_names(cf_table):
+    rows = len(cf_table)
     
     names = []
 
-    for row in range(2, rows): # Account for empty cells and headers before rows begin
-        names.append(worksheet.cell_value(row, 0))
-        
+    for row in range(0, rows):
+        names.append(cf_table[row][0])
+    
     return names
 
 # Return color list as Hex code
-def get_colors(cf_file):
-    workbook = xlrd.open_workbook(cf_file)
-    worksheet = workbook.sheet_by_index(0)
-
-    rows = worksheet.nrows
+def get_colors(cf_table):
+    rows = len(cf_table)
     
     colors = []
 
-    for row in range(2, rows): # Account for empty cells and headers before rows begin
-        colors.append(worksheet.cell_value(row, 6))
-        
+    for row in range(0, rows):
+        colors.append(cf_table[row][6])
+    
     return colors
     
 # Return internal standard MW
-def get_is_mw(cf_file):
-    workbook = xlrd.open_workbook(cf_file)
-    worksheet = workbook.sheet_by_index(0)
-
-    rows = worksheet.nrows
+def get_is_mw(cf_table):
+    rows = len(cf_table)
     
-    return float(worksheet.cell_value(rows - 1, 5))
+    return cf_table[rows - 1][5]
 
 # convert coordinate grid e.g. (0,0) to excel cell format e.g. "A1"
 def get_cell(r, c):
-    return str(chr(c + 65)) + str(r+1) # Account for cell row in xlsxwriter starts at 0
+    return '$' + str(chr(c + 65)) + '$' + str(r+1) # Account for cell row in xlsxwriter starts at 0
 
 # Gets formula for calculating corrected yields
 # r = first row of given data block, c = first column of given data block, e.g. "Front" or "Back".
@@ -236,7 +279,7 @@ def write_xl(working_dir, experiment_name, data, cf, analytes, is_mw):
     workbook = xlsxwriter.Workbook(working_dir + "/" + experiment_name + '_yields.xlsx')
     worksheet = workbook.add_worksheet()
 
-    # Write in correction factors
+    # Write in correction factor table
     r_cf_start = 0
     c_cf_start = 0
     
@@ -351,8 +394,8 @@ def write_xl(working_dir, experiment_name, data, cf, analytes, is_mw):
     workbook.close()
 
 # format retention time array for GCalignR    
-def format_ret(cf_file):
-    ret_times = get_ret_times(cf_file)
+def format_ret(cf_table):
+    ret_times = get_ret_times(cf_table)
     
     front_ret = []
     back_ret = []
@@ -397,8 +440,11 @@ def main():
     data_dir = working_dir + "/" + experiment_name
     cf_dir = working_dir + "/cf/" + cf_file
     
+    cf_table = read_cf_file(cf_dir)
+    
     # Get Front and Back retention times
     ret_times = format_ret(cf_dir)
+    print(ret_times)
     peak_reference_front = ["peaks", "Front", ret_times[0]]
     peak_reference_back = ["peaks", "Back", ret_times[1]]
     
@@ -419,9 +465,12 @@ def main():
     # Generate input files for GCalignR and process data
     generate_input_file(sort_index(report_extracted_front, 0), data_dir + '/input_data_front.txt', peak_reference_front) 
     generate_input_file(sort_index(report_extracted_back, 0), data_dir + '/input_data_back.txt', peak_reference_back)
-    front_areas = get_area(data_dir + '/input_data_front.txt')
-    back_areas = get_area(data_dir + '/input_data_back.txt')
-
+    
+    front_areas = get_area(data_dir + '/input_data_front.txt', os.getcwd() + '/gcproc.R')
+    back_areas = get_area(data_dir + '/input_data_back.txt', os.getcwd() + '/gcproc.R')
+    front_areas = fix_area_orders(front_areas, get_is_index(cf_dir))
+    back_areas = fix_area_orders(back_areas, get_is_index(cf_dir))
+    
     # Add table headers and sort
     for entry in front_areas:
         entry.insert(0, "Front")
@@ -430,9 +479,9 @@ def main():
     all_areas = sort_index(front_areas + back_areas, 1)
     
     # write data to excel workbook
-    cf = get_corr_factors(cf_dir)
-    analytes = get_names(cf_dir)
-    is_mw = get_is_mw(cf_dir)
+    analytes = get_names(cf_table)
+    is_mw = get_is_mw(cf_table)
+    cf = get_corr_factors(cf_table)
     write_xl(data_dir, experiment_name, all_areas, cf, analytes, is_mw)
     
     # Save working directory
