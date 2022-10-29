@@ -4,9 +4,10 @@
 # Date: 2022-07-03
 # Version: 1.1.0
 # Purpose: process multiple GC-FID data files and output the peak areas per analyte to an excel workbook for analysis.
-# Note: an excel file named "cf.xls" must be kept in the same folder as the data "working" directory. This should contain a list of analytes with
+# Note: an excel file named "cf.xls" is used to store retention times, correction factors, and color coding (for output spreadsheet).
 # Front and Back correction factors followed by Front and Back retention times on adjacent columns for a total of 5 columns. Folders "*.D" should be
 # in the same folder as well and contain the "Report.TXT" file.
+# Requirements: You must have R installed with the GCAlignR package also installed. You must have python installed with the xlsxwriter and xlrd packages.
 
 import subprocess
 import xlsxwriter
@@ -71,15 +72,17 @@ def extract_report_txt(report_file):
     sample_name = re.split('\s+', re.findall(pattern, content)[0])[2]
 
     # Find the general pattern "Peak RetTime Sig Type Area"
-    pattern = '\d+[ \t]+[\d\S]+[ \t]+\d+[ \t]+..[ \t]+[\d\S]+'
+    pattern = '\d+[ \t]+[\d\S]+[ \t]+\d+[ \t]+[A-Z\s]+[ \t]+[\d\S]+'
     result = re.findall(pattern, content)
+    
+    print(result)
     
     # Take only the RetTime and Area
     peak_num = len(result)
     analyte_table = []
     for i in range(0, peak_num):
         line = re.split('\s+', result[i])
-        analyte_table.append([line[1], line[4]])
+        analyte_table.append([line[1], line[len(line)-1]])
     
     return [sample_name, detector, analyte_table]
 
@@ -98,7 +101,7 @@ def generate_input_file(all_analyte_tables, output_file, peak_reference):
     max_peak_num = len(all_analyte_tables[0][2])
     print("max_peak_num = %d" % max_peak_num)
     for i in range(1, len(all_analyte_tables)):
-        peak_num = len(all_analyte_tables[i][2])
+        peak_num = len(all_analyte_tables[i][3])
         if (max_peak_num < peak_num):
             max_peak_num = peak_num
             print("new max_peak_num = %d" % max_peak_num)
@@ -114,7 +117,7 @@ def generate_input_file(all_analyte_tables, output_file, peak_reference):
     for i in range(0, max_peak_num):
         for j in range(0, sample_num):
             try:
-                data += str(all_analyte_tables[j][2][i][0]) + "\t" + str(all_analyte_tables[j][2][i][1])
+                data += str(all_analyte_tables[j][3][i][0]) + "\t" + str(all_analyte_tables[j][3][i][1])
             except:
                 data += "\t"
             if (j < sample_num - 1):
@@ -124,7 +127,7 @@ def generate_input_file(all_analyte_tables, output_file, peak_reference):
     
     # Collect sample names and format them as a single string, tab-delim.
     for i in range(0, sample_num):
-        sample_name += re.sub("[-\.]", "_", all_analyte_tables[i][0])
+        sample_name += re.sub("[-]", "-", all_analyte_tables[i][0]) # could change - to _ ([-\.])
         if (i < sample_num - 1):
             sample_name += "\t"
         else:
@@ -135,12 +138,35 @@ def generate_input_file(all_analyte_tables, output_file, peak_reference):
     f.write(sample_name)
     f.write("RT\tArea\n") # "RT" and "Area" are the column headers used in the gcproc.R script
     f.write(data)
+    
+def isFloat(num):
+    try:
+        float(num)
+        return True
+    except ValueError:
+        return False
 
 # Sort two-dimensional array by index. Returns sorted array
-def sort_index(report, index):
-    convert = lambda text: int(text) if text.isdigit() else text
-    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key[index]) ]
-    return sorted(report, key = alphanum_key)
+# Names of experiments are usually as follows: BKC-IV-001-1-1.5h, etc.
+def sort_by_time(report):
+    convert = lambda text : float(text) if isFloat(text) else (float(text.split("h")[0]) if len(re.findall("\d+.?h", text)) == 1 else text)
+    sort_key = lambda key : [convert(c) for c in re.split("[-]+", key[1])]
+    return sorted(report, key = sort_key)
+    
+def convert_time(report):
+    for entry in report:
+        name = entry[0].split("-")
+        time = name[4]
+        num = re.findall("\d+\.?\d*", time)[0]
+        unit = re.findall("[a-zA-Z]+", time)[0]
+        
+        if (str(unit) == "min"):
+            num = int(num) / 60
+            unit = "h"
+        
+        entry.insert(0, name[0] + "-" + name[1] + "-" + name[2] + "-" + name[3] + "-" + str(num) + unit)
+    
+    return report
 
 # Find the index of internal standard in the correction factors file (starts from 1)
 def get_is_index(cf_file):
@@ -410,43 +436,29 @@ def main():
     
     # Get arguments - working directory and experiment name
     args = len(sys.argv) - 1
-    working_dir = ""
+    data_dir = ""
     experiment_name = ""
-    cf_file = ""
+    cf_dir = ""
     
     if (args == 0):
-        working_dir = input("Enter working directory: ")
-        cf_file = input("Enter correction factor file name: ")
-        experiment_name = input("Enter experiment name/folder: ")
-    elif (args == 1):
-        experiment_name = sys.argv[1]
-        try:
-            working_dir = json.load(open(os.getcwd() + '/config.json'))['working_directory']
-            print('Working directory not supplied. Loaded: "%s"' % working_dir)
-            
-            cf_file = json.load(open(os.getcwd() + '/config.json'))['cf_file_name']
-        except:
-            pass
-        print('Found 1 argument: %s, using as experiment name/folder' % sys.argv[1])
+        data_dir = input("Enter working directory: ")
+        cf_dir = input("Enter correction factor file directory: ")
+        experiment_name = input("Enter experiment name: ")
     elif (args == 3):
-        working_dir = sys.argv[1]
-        cf_file = sys.argv[2]
+        data_dir = sys.argv[1]
+        cf_dir = sys.argv[2]
         experiment_name = sys.argv[3]
         print('Found 3 arguments: "%s", "%s", "%s"' % (sys.argv[1], sys.argv[2], sys.argv[3]))
     else:
-        sys.exit("Usage:\tgcproc.py working_path cf_file experiment_name\n\tgcproc.py experiment_name") 
-    
-    # Append experiment_name to working_dir to get data location. Define cd_dir to be in cf folder of working directory
-    data_dir = working_dir + "/" + experiment_name
-    cf_dir = working_dir + "/cf/" + cf_file
+        sys.exit("Usage:\tgcproc.py working_path cf_dir experiment_name\n\tgcproc.py experiment_name") 
     
     cf_table = read_cf_file(cf_dir)
     
     # Get Front and Back retention times
     ret_times = format_ret(cf_dir)
-    print(ret_times)
-    peak_reference_front = ["peaks", "Front", ret_times[0]]
-    peak_reference_back = ["peaks", "Back", ret_times[1]]
+    print('\nFound %s front retention times.\nFound %s back retention times.' % (len(ret_times[0]), len(ret_times[1])))
+    peak_reference_front = ["peaks", "Filler", "Front", ret_times[0]]
+    peak_reference_back = ["peaks", "Filler", "Back", ret_times[1]]
     
     # extract reports and organize as back or front detector
     data_list = os.listdir(data_dir)
@@ -454,7 +466,7 @@ def main():
 
     report_extracted_front = []
     report_extracted_back = []
-
+    
     for i in range(len(data_folders)):
         extract = extract_report_txt(data_dir + "/" + data_folders[i] + "/Report.TXT")
         if (extract[1] == "Front"):
@@ -463,9 +475,10 @@ def main():
             report_extracted_back.append(extract)
 
     # Generate input files for GCalignR and process data
-    generate_input_file(sort_index(report_extracted_front, 0), data_dir + '/input_data_front.txt', peak_reference_front) 
-    generate_input_file(sort_index(report_extracted_back, 0), data_dir + '/input_data_back.txt', peak_reference_back)
+    generate_input_file(convert_time(report_extracted_front), data_dir + '/input_data_front.txt', peak_reference_front) 
+    generate_input_file(convert_time(report_extracted_back), data_dir + '/input_data_back.txt', peak_reference_back)
     
+    print("generated input files")
     front_areas = get_area(data_dir + '/input_data_front.txt', os.getcwd() + '/gcproc.R')
     back_areas = get_area(data_dir + '/input_data_back.txt', os.getcwd() + '/gcproc.R')
     front_areas = fix_area_orders(front_areas, get_is_index(cf_dir))
@@ -476,7 +489,9 @@ def main():
         entry.insert(0, "Front")
     for entry in back_areas:
         entry.insert(0, "Back")
-    all_areas = sort_index(front_areas + back_areas, 1)
+        
+    all_areas = sort_by_time(front_areas + back_areas)
+    print(all_areas)
     
     # write data to excel workbook
     analytes = get_names(cf_table)
@@ -485,9 +500,8 @@ def main():
     write_xl(data_dir, experiment_name, all_areas, cf, analytes, is_mw)
     
     # Save working directory
-    config = {'working_directory': working_dir, 'cf_file_name': cf_file}
+    config = {'working_directory': data_dir, 'cf_file_name': cf_dir}
     json.dump(config, open(os.getcwd() + '/config.json', 'w'))
-
 
 if __name__ == "__main__":
     main()
