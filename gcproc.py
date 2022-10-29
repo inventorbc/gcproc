@@ -71,18 +71,15 @@ def extract_report_txt(report_file):
     pattern = 'Sample Name: .*'
     sample_name = re.split('\s+', re.findall(pattern, content)[0])[2]
 
-    # Find the general pattern "Peak RetTime Sig Type Area"
-    pattern = '\d+[ \t]+[\d\S]+[ \t]+\d+[ \t]+[A-Z\s]+[ \t]+[\d\S]+'
+    # Find the general pattern "Peak RetTime Sig Type Area". Capturing groups 1 and 4 are Peak and Area. Sig is captured for "BB S" case as well.
+    pattern = '(\d+)\s+([.\d]+)\s+(\d+)([A-Z\s]+)([.\d]+)'
     result = re.findall(pattern, content)
     
-    print(result)
-    
     # Take only the RetTime and Area
-    peak_num = len(result)
     analyte_table = []
-    for i in range(0, peak_num):
-        line = re.split('\s+', result[i])
-        analyte_table.append([line[1], line[len(line)-1]])
+    for peak in result:
+        analyte_table.append([peak[1], peak[4]])
+        print("Found Peak: %s, Area: %s" % (peak[1], peak[4]))
     
     return [sample_name, detector, analyte_table]
 
@@ -156,15 +153,18 @@ def sort_by_time(report):
 def convert_time(report):
     for entry in report:
         name = entry[0].split("-")
-        time = name[4]
-        num = re.findall("\d+\.?\d*", time)[0]
-        unit = re.findall("[a-zA-Z]+", time)[0]
-        
-        if (str(unit) == "min"):
-            num = int(num) / 60
-            unit = "h"
-        
-        entry.insert(0, name[0] + "-" + name[1] + "-" + name[2] + "-" + name[3] + "-" + str(num) + unit)
+        try:
+            time = name[4]
+            num = re.findall("\d+\.?\d*", time)[0]
+            unit = re.findall("[a-zA-Z]+", time)[0]
+            
+            if (str(unit) == "min"):
+                num = int(num) / 60
+                unit = "h"
+            
+            entry.insert(0, name[0] + "-" + name[1] + "-" + name[2] + "-" + name[3] + "-" + str(num) + unit)
+        except IndexError:
+            sys.exit("Error: Name of folders must be in the form INITIALS-NOTEBOOK-PAGE-ENTRY-TIME(h or min), e.g. BKC-IV-032-1-30min.D")
     
     return report
 
