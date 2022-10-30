@@ -21,7 +21,7 @@ import os
 def get_area(input_file, script):
     output = subprocess.check_output(['RScript', script, input_file], universal_newlines=True)
     
-    # Locate the start and end of the dataframe with analyte peak areas
+    # Locate the start and end of the dataframe with analyte peak areas. If entry names are too long and RScript output cuts each entry into two separate rows, it will error out!
     pattern = 'START(?:\s|.)*END' #?: non capaturing group so that re does not return matched capture group.
     result = re.findall(pattern, output)
     data = re.split('\n', result[0])
@@ -40,6 +40,8 @@ def fix_area_orders(area_table, is_index):
     rows = len(area_table)
     cols = len(area_table[0])
     
+    print("Fixing area order with IS")
+        
     fixed_area_table = []
     
     for row in range(0, rows):
@@ -70,10 +72,12 @@ def extract_report_txt(report_file):
     # Get sample name
     pattern = 'Sample Name: .*'
     sample_name = re.split('\s+', re.findall(pattern, content)[0])[2]
+    print(sample_name)
 
     # Find the general pattern "Peak RetTime Sig Type Area". Capturing groups 1 and 4 are Peak and Area. Sig is captured for "BB S" case as well.
-    pattern = '(\d+)\s+([.\d]+)\s+(\d+)([A-Z\s]+)([.\d]+)'
+    pattern = '\s+(\d+)\s+([.\d]+)\s+(\d+)([A-Z\s]+)([.\d]+)'
     result = re.findall(pattern, content)
+    print(result)
     
     # Take only the RetTime and Area
     analyte_table = []
@@ -152,17 +156,20 @@ def sort_by_time(report):
     
 def convert_time(report):
     for entry in report:
-        name = entry[0].split("-")
+        name = entry[0]
+        print(name)
         try:
-            time = name[4]
-            num = re.findall("\d+\.?\d*", time)[0]
-            unit = re.findall("[a-zA-Z]+", time)[0]
+            pattern = "(\S+-)([\d\.]+)(min|h)(.*)"
+            time = re.findall(pattern, name)[0]
+            
+            num = time[1]
+            unit = time[2]
             
             if (str(unit) == "min"):
                 num = int(num) / 60
                 unit = "h"
             
-            entry.insert(0, name[0] + "-" + name[1] + "-" + name[2] + "-" + name[3] + "-" + str(num) + unit)
+            entry.insert(0, time[0] + "{:.2f}".format(float(num)) + unit + time[3])
         except IndexError:
             sys.exit("Error: Name of folders must be in the form INITIALS-NOTEBOOK-PAGE-ENTRY-TIME(h or min), e.g. BKC-IV-032-1-30min.D")
     
@@ -473,7 +480,11 @@ def main():
             report_extracted_front.append(extract)
         else:
             report_extracted_back.append(extract)
-
+    
+    print("Extracted Report: ")
+    print(report_extracted_front)
+    print(report_extracted_back)
+    
     # Generate input files for GCalignR and process data
     generate_input_file(convert_time(report_extracted_front), data_dir + '/input_data_front.txt', peak_reference_front) 
     generate_input_file(convert_time(report_extracted_back), data_dir + '/input_data_back.txt', peak_reference_back)
@@ -491,7 +502,6 @@ def main():
         entry.insert(0, "Back")
         
     all_areas = sort_by_time(front_areas + back_areas)
-    print(all_areas)
     
     # write data to excel workbook
     analytes = get_names(cf_table)
